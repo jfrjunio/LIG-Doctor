@@ -1,0 +1,7 @@
+-go to https://docs.conda.io/en/latest/miniconda.html
+-download Python 2.7 64-bit (bash installer) -- as of 05/2019, theano does not run over python 3, so do not try
+-chmod +x Miniconda2-latest.Linux-x86_64.sh
+-sudo ./Miniconda2-latest.Linux-x86_64.sh
+-conda install theano pygpu
+-conda install numpy=1.12  (this is a necessary downgrade)
+-in case of scan_perform.c warning messages, follow the answer provided at https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-theano
