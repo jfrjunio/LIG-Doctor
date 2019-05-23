@@ -22,7 +22,7 @@ global ARGS
 
 #given a map of (hadm_id, set of diagnoses icd9 codes), convert the map to (hadm_id, CCS codes)
 def map_ICD9_to_CCS(map):
-	icd9TOCCS_Map = pickle.load(open(sys.path[0]+'/icd9_to_css_dictionary','rb'))
+	icd9TOCCS_Map = pickle.load(open(sys.path[0]+'CCS/icd9_to_css_dictionary','rb'))
 	procCODEstoInternalID_map = {}
 	set_of_used_codes = set()
 	for (hadm_id, ICD9s_List) in map.items():

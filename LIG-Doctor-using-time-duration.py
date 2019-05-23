@@ -48,7 +48,7 @@ def min_max_normalization(time_trainSet,time_testSet):
 		for j, item in enumerate(test):
 			time_testSet[i][j] = ((time_testSet[i][j] - tMin) / float(tMax - tMin)) * 0.8 + 0.1
 
-def prepareHotVectors(train_tensor, labels_tensor):
+def prepareHotVectors(train_tensor, labels_tensor, features_tensor):
 	nVisitsOfEachPatient_List = np.array([len(seq) for seq in train_tensor]) - 1
 	numberOfPatients = len(train_tensor)
 	maxNumberOfAdmissions = np.max(nVisitsOfEachPatient_List)
@@ -56,19 +56,22 @@ def prepareHotVectors(train_tensor, labels_tensor):
 	x_hotvectors_tensorf = np.zeros((maxNumberOfAdmissions, numberOfPatients, ARGS.numberOfInputCodes)).astype(config.floatX)
 	y_hotvectors_tensor = np.zeros((maxNumberOfAdmissions, numberOfPatients, ARGS.numberOfInputCodes)).astype(config.floatX)
 	mask = np.zeros((maxNumberOfAdmissions, numberOfPatients)).astype(config.floatX)
+	feats_hotvectors_tensor = np.zeros((maxNumberOfAdmissions, numberOfPatients, ARGS.numberOfFeatsCodes)).astype(config.floatX)
 
-	for idx, (train_patient_matrix,label_patient_matrix) in enumerate(zip(train_tensor,labels_tensor)):
+	for idx, (train_patient_matrix,label_patient_matrix,feats_patient_matrix) in enumerate(zip(train_tensor,labels_tensor,features_tensor)):
 		for i_th_visit, visit_line in enumerate(train_patient_matrix[:-1]): #ignores the last admission, which is not part of the training
 			for code in visit_line:
 				x_hotvectors_tensorf[i_th_visit, idx, code] = 1
 		for i_th_visit, visit_line in enumerate(label_patient_matrix[1:]):  #label_matrix[1:] = all but the first admission slice, not used to evaluate (this is the answer)
 			for code in visit_line:
 				y_hotvectors_tensor[i_th_visit, idx, code] = 1
+		for i_th_visit, time in enumerate(feats_patient_matrix[:-1]): #ignores the last admission, which is not part of the training
+			feats_hotvectors_tensor[i_th_visit, idx, 0] = time
 		mask[:nVisitsOfEachPatient_List[idx], idx] = 1.
 
 	nVisitsOfEachPatient_List = np.array(nVisitsOfEachPatient_List, dtype=config.floatX)
 	x_hotvectors_tensorb = x_hotvectors_tensorf[::-1,::,::] #backward tensor for bi-directional processing
-	return x_hotvectors_tensorf, x_hotvectors_tensorb, y_hotvectors_tensor, mask, nVisitsOfEachPatient_List
+	return x_hotvectors_tensorf, x_hotvectors_tensorb, y_hotvectors_tensor, feats_hotvectors_tensor, mask, nVisitsOfEachPatient_List
 
 
 #initialize model tPARAMS
@@ -172,6 +175,11 @@ def build_model():
 	flowing_tensorf = xf
 	flowing_tensorb = xb
 
+	featsSlice = T.tensor3('t', dtype=config.floatX)
+	# -----------
+	flowing_tensorf = T.concatenate([featsSlice, flowing_tensorf], axis=2)
+	flowing_tensorb = T.concatenate([featsSlice[::-1, ::, ::], flowing_tensorb], axis=2)
+
 	for i, hiddenDimSize in enumerate(ARGS.hiddenDimSize):
 		flowing_tensorf = fMinGRU_layer(flowing_tensorf, str(i), hiddenDimSize, mask=mask)
 		flowing_tensorf = dropout(flowing_tensorf)
@@ -201,13 +209,13 @@ def build_model():
 
 	L2_regularized_loss = T.mean(prediction_loss) + ARGS.LregularizationAlpha*(tPARAMS['W_output'] ** 2).sum()
 	MODEL = L2_regularized_loss
-	return xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL
+	return xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List, MODEL
 
 
 #this code comes originally from deeplearning.net/tutorial/LSTM.html
 #http://ruder.io/optimizing-gradient-descent/index.html#adadelta
 #https://arxiv.org/abs/1212.5701
-def addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL):
+def addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL, featsSlice=None):
 	zipped_grads = [theano.shared(p.get_value() * numpy_floatX(0.), name='%s_grad' % k) for k, p in tPARAMS.iteritems()]
 	running_up2 = [theano.shared(p.get_value() * numpy_floatX(0.), name='%s_rup2' % k) for k, p in tPARAMS.iteritems()]
 	running_grads2 = [theano.shared(p.get_value() * numpy_floatX(0.), name='%s_rgrad2' % k) for k, p in tPARAMS.iteritems()]
@@ -215,7 +223,7 @@ def addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List
 	zgup = [(zg, g) for zg, g in zip(zipped_grads, grads)]
 	rg2up = [(rg2, 0.95 * rg2 + 0.05 * (g ** 2)) for rg2, g in zip(running_grads2, grads)]
 
-	TRAIN_MODEL_COMPILED = theano.function([xf, xb, y, mask, nVisitsOfEachPatient_List], MODEL, updates=zgup + rg2up, name='adadelta_TRAIN_MODEL_COMPILED')
+	TRAIN_MODEL_COMPILED = theano.function([xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List], MODEL, updates=zgup + rg2up, name='adadelta_TRAIN_MODEL_COMPILED')
 
 	updir = [-T.sqrt(ru2 + 1e-6) / T.sqrt(rg2 + 1e-6) * zg for zg, ru2, rg2 in zip(zipped_grads, running_up2, running_grads2)]
 	ru2up = [(ru2, 0.95 * ru2 + 0.05 * (ud ** 2)) for ru2, ud in zip(running_up2, updir)]
@@ -239,6 +247,14 @@ def load_data():
 	labels_trainSet = pickle.load(open(ARGS.inputFileRadical+'.train', 'rb'))
 	labels_testSet = pickle.load(open(ARGS.inputFileRadical+'.test', 'rb'))
 
+	ARGS.featsFile = ARGS.inputFileRadical + '.DURATION'
+	print('Using features: ' + ARGS.featsFile)
+	feats_trainSet = pickle.load(open(ARGS.featsFile+'.train', 'rb'))
+	feats_testSet = pickle.load(open(ARGS.featsFile+'.test', 'rb'))
+
+	ARGS.numberOfFeatsCodes = 1  # for time, we will need one single position
+	print 'Number of features codes: ' + str(ARGS.numberOfFeatsCodes)
+
 	train_sorted_index = sorted(range(len(main_trainSet)), key=lambda x: len(main_trainSet[x]))  #lambda x: len(seq[x]) --> f(x) return len(seq[x])
 	main_trainSet = [main_trainSet[i] for i in train_sorted_index]
 	labels_trainSet = [labels_trainSet[i] for i in train_sorted_index]
@@ -247,8 +263,13 @@ def load_data():
 	main_testSet = [main_testSet[i] for i in test_sorted_index]
 	labels_testSet = [labels_testSet[i] for i in test_sorted_index]
 
-	trainSet = [main_trainSet, labels_trainSet]
-	testSet = [main_testSet, labels_testSet]
+	feats_trainSet = [feats_trainSet[i] for i in train_sorted_index]
+	feats_testSet = [feats_testSet[i] for i in test_sorted_index]
+
+	min_max_normalization(feats_trainSet, feats_testSet)
+
+	trainSet = [main_trainSet, labels_trainSet, feats_trainSet]
+	testSet = [main_testSet, labels_testSet, feats_testSet]
 
 	return trainSet, testSet
 
@@ -263,8 +284,9 @@ def performEvaluation(TEST_MODEL_COMPILED, test_Set):
 	for index in xrange(n_batches):
 		batchX = test_Set[0][index * batchSize:(index + 1) * batchSize]
 		batchY = test_Set[1][index * batchSize:(index + 1) * batchSize]
-		xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY)
-		crossEntropy = TEST_MODEL_COMPILED(xf, xb, y, mask, nVisitsOfEachPatient_List)
+		batchT = test_Set[2][index * batchSize:(index + 1) * batchSize]
+		xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY, batchT)
+		crossEntropy = TEST_MODEL_COMPILED(xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List)
 
 		#accumulation by simple summation taking the batch size into account
 		crossEntropySum += crossEntropy * len(batchX)
@@ -278,19 +300,21 @@ def train_model():
 	previousDimSize = ARGS.numberOfInputCodes
 
 	print '==> parameters initialization'
+	previousDimSize += ARGS.numberOfFeatsCodes
 	print('Using neuron type Bidirectional Gated Recurrent Unit')
 	previousDimSize = init_params_BiMinGRU(previousDimSize)
 	init_params_output_layer(previousDimSize)
 
 	print '==> model building'
-	xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL =  build_model()
+	print('Using feature (procedure/type) information from files ' + ARGS.featsFile)
+	xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List, MODEL =  build_model()
 	grads = T.grad(theano.gradient.grad_clip(MODEL, -0.5, 0.5), wrt=tPARAMS.values())
-	TRAIN_MODEL_COMPILED, UPDATE_WEIGHTS_COMPILED = addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL)
+	TRAIN_MODEL_COMPILED, UPDATE_WEIGHTS_COMPILED = addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL, featsSlice)
 
 	print '==> training and validation'
 	batchSize = ARGS.batchSize
 	n_batches = int(np.ceil(float(len(trainSet[0])) / float(batchSize)))
-	TEST_MODEL_COMPILED = theano.function(inputs=[xf, xb, y, mask, nVisitsOfEachPatient_List], outputs=MODEL, name='TEST_MODEL_COMPILED')
+	TEST_MODEL_COMPILED = theano.function(inputs=[xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List], outputs=MODEL, name='TEST_MODEL_COMPILED')
 
 	bestValidationCrossEntropy = 1e20
 	bestValidationEpoch = 0
@@ -303,13 +327,14 @@ def train_model():
 		iteration = 0
 		trainCrossEntropyVector = []
 		for index in random.sample(range(n_batches), n_batches):
-			batchX = trainSet[0][index*batchSize:(index+1)*batchSize]
+			batchX = trainSet[0][index*batchSize:(index + 1)*batchSize]
 			batchY = trainSet[1][index*batchSize:(index + 1)*batchSize]
-			xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY)
+			batchT = trainSet[2][index*batchSize:(index + 1)*batchSize]
+			xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY, batchT)
 			xf += np.random.normal(0, 0.1, xf.shape)  #add gaussian noise as a means to reduce overfitting
 			xb += np.random.normal(0, 0.1, xb.shape)  #add gaussian noise as a means to reduce overfitting
 
-			trainCrossEntropy = TRAIN_MODEL_COMPILED(xf, xb, y, mask, nVisitsOfEachPatient_List)
+			trainCrossEntropy = TRAIN_MODEL_COMPILED(xf, xb, y, featsSlice, mask, nVisitsOfEachPatient_List)
 			trainCrossEntropyVector.append(trainCrossEntropy)
 			UPDATE_WEIGHTS_COMPILED()
 			iteration += 1
@@ -338,6 +363,7 @@ def train_model():
 	print('--------------SUMMARY--------------')
 	print('The best VALIDATION cross entropy occurred at epoch %d, the value was of %f ' % (bestValidationEpoch, bestValidationCrossEntropy))
 	print('Best model file: ' + bestModelFileName)
+	print 'Used features file with max number of procedures code = ' + str(ARGS.numberOfFeatsCodes)
 	print('Number of improvement epochs: ' + str(iImprovementEpochs) + ' out of ' + str(epoch_counter+1) + ' possible improvements.')
 	print('Note: the smaller the cross entropy, the better.')
 	print('-----------------------------------')
@@ -345,6 +371,7 @@ def train_model():
 def parse_arguments():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('inputFileRadical', type=str, metavar='<visit_file>', help='File radical name (the software will look for .train and .test files) with pickled data organized as patient x admission x codes.')
+	parser.add_argument('--featsFile', type=str, default='', help='A file containing features (time duration, for instance) to concatenate to the input.')
 	parser.add_argument('outFile', metavar='out_file', default='model_output', help='Any file name to store the model.')
 	parser.add_argument('--maxConsecutiveNonImprovements', type=int, default=10, help='Training wiil run until reaching the maximum number of epochs without improvement before stopping the training')
 	parser.add_argument('--hiddenDimSize', type=str, default='[271]', help='Number of layers and their size - for example [100,200] refers to two layers with 100 and 200 nodes.')

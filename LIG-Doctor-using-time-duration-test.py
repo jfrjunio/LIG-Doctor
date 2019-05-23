@@ -17,29 +17,46 @@ def numpy_floatX(data):
 	return np.asarray(data, dtype=config.floatX)
 
 
-def prepareHotVectors(test_tensor):
+def prepareHotVectors(test_tensor, features_tensor):
 	n_visits_of_each_patientList = np.array([len(seq) for seq in test_tensor]) - 1
 	number_of_patients = len(test_tensor)
 	max_number_of_visits = np.max(n_visits_of_each_patientList)
 
 	x_hotvectors_tensorf = np.zeros((max_number_of_visits, number_of_patients, ARGS.numberOfInputCodes)).astype(config.floatX)
 	mask = np.zeros((max_number_of_visits, number_of_patients)).astype(config.floatX)
+	feats_hotvectors_tensor = np.zeros((max_number_of_visits, number_of_patients, ARGS.numberOfFeatsCodes)).astype(config.floatX)
 
-	for idx, (train_patient_matrix) in enumerate(test_tensor):
+	for idx, (train_patient_matrix,feats_patient_matrix) in enumerate(zip(test_tensor,features_tensor)):
 		for i_th_visit, visit_line in enumerate(train_patient_matrix[:-1]): #ignores the last visit, which is not part of the computation
 			for code in visit_line:
 				x_hotvectors_tensorf[i_th_visit, idx, code] = 1
+		for i_th_visit, time in enumerate(feats_patient_matrix[:-1]): #ignores the last visit, which is not part of the computation
+			feats_hotvectors_tensor[i_th_visit, idx, 0] = time
 		mask[:n_visits_of_each_patientList[idx], idx] = 1.
 
 	x_hotvectors_tensorb = x_hotvectors_tensorf[::-1,::,::]
-	return x_hotvectors_tensorf, x_hotvectors_tensorb, mask, n_visits_of_each_patientList
+	return x_hotvectors_tensorf, x_hotvectors_tensorb, feats_hotvectors_tensor, mask, n_visits_of_each_patientList
+
+
+def min_max_normalization(time_trainSet,time_testSet):
+	# we collect parameters for normalization
+	tMax = np.array(np.array([(np.array(time_trainSet)).max(),(np.array(time_testSet)).max()]).max()).max()
+	tMin = np.array(np.array([(np.array(time_trainSet)).min(),(np.array(time_testSet)).max()]).min()).max()
+	# normalization in the range [0.1-0.8]
+	for i, train in enumerate(time_trainSet):
+		for j, item in enumerate(train):
+			time_trainSet[i][j] = ((time_trainSet[i][j] - tMin) / float(tMax - tMin)) * 0.8 + 0.1
+	for i, test in enumerate(time_testSet):
+		for j, item in enumerate(test):
+			time_testSet[i][j] = ((time_testSet[i][j] - tMin) / float(tMax - tMin)) * 0.8 + 0.1
 
 def loadModel():
 	model = np.load(ARGS.modelFile)
 	tPARAMS = OrderedDict()
 	for key, value in model.iteritems():
 		tPARAMS[key] = theano.shared(value, name=key)
-	ARGS.numberOfInputCodes = model['fWf_0'].shape[0]
+	ARGS.numberOfFeatsCodes = 1
+	ARGS.numberOfInputCodes = model['fWf_0'].shape[0] - ARGS.numberOfFeatsCodes
 	return tPARAMS
 
 
@@ -85,6 +102,7 @@ def bMinGRU_layer(inputTensor, layerIndex, hiddenDimSize, mask=None):
 								   # just initialization
 								   name='bMinGRU_layer' + layerIndex,  # just labeling for debug
 								   n_steps=maxNumberOfVisits)  # number of times to execute - scan is a loop
+
 	return results
 
 
@@ -96,6 +114,10 @@ def build_model():
 
 	flowing_tensorf = xf
 	flowing_tensorb = xb
+	featsSlice = T.tensor3('t', dtype=config.floatX)
+
+	flowing_tensorf = T.concatenate([featsSlice, flowing_tensorf], axis=2)
+	flowing_tensorb = T.concatenate([featsSlice[::-1, ::, ::], flowing_tensorb], axis=2)
 
 	for i, hiddenDimSize in enumerate(ARGS.hiddenDimSize):
 		flowing_tensorf = fMinGRU_layer(flowing_tensorf, str(i), hiddenDimSize, mask=mask)
@@ -112,10 +134,9 @@ def build_model():
 		outputs_info=None,
 		name='softmax_layer',
 		n_steps=maxNumberOfAdmissions)
-
 	results = results * mask[:, :, None]
 
-	return xf, xb, mask, results
+	return xf, xb, featsSlice, mask, results
 
 
 
@@ -130,7 +151,17 @@ def load_data():
 	testSet_x = [testSet_x[i] for i in sorted_index]
 	testSet_y = [testSet_y[i] for i in sorted_index]
 
-	testSet = [testSet_x, testSet_y]
+	ARGS.featsFile = ARGS.inputFileRadical + '.DURATION'
+	print('Using extra features (interval/duration/type) from file ' + ARGS.featsFile)
+	feats_trainSet = pickle.load(open(ARGS.featsFile+'.test', 'rb'))
+	feats_testSet = pickle.load(open(ARGS.featsFile+'.test', 'rb'))
+
+	feats_trainSet = [feats_trainSet[i] for i in sorted_index]
+	feats_testSet = [feats_testSet[i] for i in sorted_index]
+
+	min_max_normalization(feats_trainSet, feats_testSet)
+
+	testSet = [testSet_x, testSet_y, feats_testSet]
 	return testSet
 
 
@@ -143,8 +174,8 @@ def testModel():
 	testSet = load_data()
 
 	print '==> model rebuilding'
-	xf, xb, mask, MODEL = build_model()
-	PREDICTOR_COMPILED = theano.function(inputs=[xf, xb, mask], outputs=MODEL, name='PREDICTOR_COMPILED')
+	xf, xb, featsSlice, mask, MODEL = build_model()
+	PREDICTOR_COMPILED = theano.function(inputs=[xf, xb, featsSlice, mask], outputs=MODEL, name='PREDICTOR_COMPILED')
 
 	print '==> model execution'
 	nBatches = int(np.ceil(float(len(testSet[0])) / float(ARGS.batchSize)))
@@ -153,8 +184,9 @@ def testModel():
 	for batchIndex in range(nBatches):
 		batchX = testSet[0][batchIndex * ARGS.batchSize: (batchIndex + 1) * ARGS.batchSize]
 		batchY = testSet[1][batchIndex * ARGS.batchSize: (batchIndex + 1) * ARGS.batchSize]
-		xf, xb, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX)
-		predicted_y = PREDICTOR_COMPILED(xf, xb, mask)
+		batchT = testSet[2][batchIndex * ARGS.batchSize: (batchIndex + 1) * ARGS.batchSize]
+		xf, xb, featsSlice, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchT)
+		predicted_y = PREDICTOR_COMPILED(xf, xb, featsSlice, mask)
 
 		for ith_patient in range(predicted_y.shape[1]):
 			predictedPatientSlice = predicted_y[:, ith_patient, :]
@@ -190,6 +222,7 @@ def testModel():
 def parse_arguments():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('inputFileRadical', type=str, metavar='<visit_file>', help='File radical name (the software will look for .test file) with pickled data organized as patient x admission x codes.')
+	parser.add_argument('--featsFile', type=str, default='', help='A file containing features to concatenate to the input.')
 	parser.add_argument('modelFile', type=str, metavar='<model_file>', help='The path to the model file .npz')
 	parser.add_argument('--hiddenDimSize', type=str, default='[271]', help='Number of layers and their size - for example [100,200] refers to two layers with 100 and 200 nodes.')
 	parser.add_argument('--batchSize', type=int, default=100, help='Batch size.')
