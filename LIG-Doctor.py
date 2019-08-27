@@ -36,18 +36,6 @@ def getNumberOfCodes(sets):
 						highestCode = code
 	return (highestCode + 1)
 
-def min_max_normalization(time_trainSet,time_testSet):
-	# we collect parameters for normalization
-	tMax = np.array(np.array([(np.array(time_trainSet)).max(),(np.array(time_testSet)).max()]).max()).max()
-	tMin = np.array(np.array([(np.array(time_trainSet)).min(),(np.array(time_testSet)).max()]).min()).max()
-	# normalization in the range [0.1-0.8]
-	for i, train in enumerate(time_trainSet):
-		for j, item in enumerate(train):
-			time_trainSet[i][j] = ((time_trainSet[i][j] - tMin) / float(tMax - tMin)) * 0.8 + 0.1
-	for i, test in enumerate(time_testSet):
-		for j, item in enumerate(test):
-			time_testSet[i][j] = ((time_testSet[i][j] - tMin) / float(tMax - tMin)) * 0.8 + 0.1
-
 def prepareHotVectors(train_tensor, labels_tensor):
 	nVisitsOfEachPatient_List = np.array([len(seq) for seq in train_tensor]) - 1
 	numberOfPatients = len(train_tensor)
@@ -278,7 +266,7 @@ def train_model():
 	previousDimSize = ARGS.numberOfInputCodes
 
 	print '==> parameters initialization'
-	print('Using neuron type Bidirectional Gated Recurrent Unit')
+	print('Using neuron type Bidirectional Minimal Gated Recurrent Unit')
 	previousDimSize = init_params_BiMinGRU(previousDimSize)
 	init_params_output_layer(previousDimSize)
 
@@ -325,10 +313,10 @@ def train_model():
 			bestValidationEpoch = epoch_counter
 
 			tempParams = unzip(tPARAMS)
+			bestModelFileName = ARGS.outFile + '.npz'
 			if os.path.exists(bestModelFileName):
 				os.remove(bestModelFileName)
-			np.savez_compressed(ARGS.outFile + '.' + str(epoch_counter), **tempParams)
-			bestModelFileName = ARGS.outFile + '.' + str(epoch_counter) + '.npz'
+			np.savez_compressed(bestModelFileName, **tempParams)
 		else:
 			print('Epoch ended without improvement.')
 			iConsecutiveNonImprovements += 1
@@ -346,7 +334,7 @@ def parse_arguments():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('inputFileRadical', type=str, metavar='<visit_file>', help='File radical name (the software will look for .train and .test files) with pickled data organized as patient x admission x codes.')
 	parser.add_argument('outFile', metavar='out_file', default='model_output', help='Any file name to store the model.')
-	parser.add_argument('--maxConsecutiveNonImprovements', type=int, default=10, help='Training wiil run until reaching the maximum number of epochs without improvement before stopping the training')
+	parser.add_argument('--maxConsecutiveNonImprovements', type=int, default=5, help='Training wiil run until reaching the maximum number of epochs without improvement before stopping the training')
 	parser.add_argument('--hiddenDimSize', type=str, default='[271]', help='Number of layers and their size - for example [100,200] refers to two layers with 100 and 200 nodes.')
 	parser.add_argument('--batchSize', type=int, default=100, help='Batch size.')
 	parser.add_argument('--nEpochs', type=int, default=1000, help='Number of training iterations.')
@@ -357,6 +345,8 @@ def parse_arguments():
 	hiddenDimSize = [int(strDim) for strDim in ARGStemp.hiddenDimSize[1:-1].split(',')]
 	ARGStemp.hiddenDimSize = hiddenDimSize
 	return ARGStemp
+
+
 
 if __name__ == '__main__':
 	global tPARAMS
