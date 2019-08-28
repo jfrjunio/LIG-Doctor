@@ -10,8 +10,11 @@ python
 import theano
 
 #after all set
-#training - bulds trhained model saved in a file called model.npz
+#training - trains model and saves it in a file called model.npz
 python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model
 
 #testing
-python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz 
+python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz
+
+DISCLAIMER: we built the data file using the mimic-III dataset; but the file is nothing but a bunch of numbers in binary format;
+in order to make sense out of the file, one must download mimic-III from https://mimic.physionet.org
