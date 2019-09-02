@@ -99,7 +99,7 @@ def fMinGRU_layer(inputTensor, layerIndex, hiddenDimSize, mask=None):
 	Wh = T.dot(inputTensor,tPARAMS['fWh_' + layerIndex])
 
 	def stepFn(stepMask, wf, wh, h_previous):
-		f = T.nnet.sigmoid(wf + T.dot(h_previous,tPARAMS['fUf_' + layerIndex])) + tPARAMS['fbf_' + layerIndex]
+		f = T.nnet.sigmoid(wf + T.dot(h_previous,tPARAMS['fUf_' + layerIndex]) + tPARAMS['fbf_' + layerIndex])
 		h_intermediate = T.tanh(wh + T.dot(f * h_previous, tPARAMS['fUh_' + layerIndex]) + tPARAMS['fbh_' + layerIndex])
 		h_new = ((1. - f) * h_previous) + f * h_intermediate
 		h_new = stepMask[:, None] * h_new + (1. - stepMask)[:,None] * h_previous
