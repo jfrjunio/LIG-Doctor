@@ -4,4 +4,9 @@
 -sudo ./Miniconda2-latest.Linux-x86_64.sh
 -conda install theano pygpu
 -conda install numpy=1.12  (this is a necessary downgrade)
--in case of scan_perform.c warning messages, follow the answer provided at https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-theano
+-in case of scan_perform.c warning messages, follow the answer provided at https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-theano (here is the file: https://github.com/Theano/Theano/blob/master/theano/scan_module/c_code/scan_perform.c)
+-create text file ~/.theanorc with lines
+"[global]
+optimizer_excluding=scanOp_pushout_output"
+
+
