@@ -7,7 +7,7 @@
 4) fix a theano installation bug as described in
 https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-theano
 (here is the file: https://github.com/Theano/Theano/blob/master/theano/scan_module/c_code/scan_perform.c)
-5) add text file ~/.theanorc with lines
+5) create text file ~/.theanorc with lines
 "[global]
 optimizer_excluding=scanOp_pushout_output"
 
