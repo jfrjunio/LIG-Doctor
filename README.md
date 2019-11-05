@@ -16,7 +16,7 @@ python
 import theano
 
 #after all set
-#training - bulds trhained model saved in a file called model.npz
+#training - builds model to be saved in a file called model.npz
 python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model
 
 #testing
