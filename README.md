@@ -11,17 +11,16 @@ https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-t
 "[global]
 optimizer_excluding=scanOp_pushout_output"
 
-#testing
+#testing the installation
 python
-import theano
+import theano #should execute smoothly
 
 #after all set
-#training - builds model to be saved in a file called model.npz
+#model training - builds model to be saved in a file called model.npz
+ python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model
 
-python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model
-
-#testing
-python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz 
+#model testing:
+ python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz 
 
 
 These input files are outputs of script preprocess_mimiciii.py.
