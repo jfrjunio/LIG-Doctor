@@ -248,8 +248,8 @@ def testModel():
 			recall_sum[m] += len(intersection_set) / float(len(ithActualYSet))
 			precision_sum[m] += len(intersection_set) / float(k) # this is precision because the numerator is ithK \in [10,20,30]
 
-	bReportDynamicK = False
-	if bReportDynamicK:
+	bReportDynamic_K = False
+	if bReportDynamic_K:
 		finalRecalls = []
 		finalPrecisions = []
 		for m in multiples_list:
