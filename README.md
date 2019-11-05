@@ -16,17 +16,16 @@ python
 import theano #should execute smoothly
 
 
-
 #after all set
 #model training - builds model to be saved in a file called model.npz:
 
-python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model
+"python ./LIG-Doctor.py ./mimic-90-10_02_271 ./model"
 
 
 
 #model testing:
 
-python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz 
+"python ./LIG-Doctor-test.py ./mimic-90-10_02_271 ./model.npz"
 
 
 These input files are outputs of script preprocess_mimiciii.py.
