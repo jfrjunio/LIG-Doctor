@@ -94,9 +94,9 @@ def parse_arguments():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('admissions_file', type=str, default='ADMISSIONS.csv', help='The ADMISSIONS.csv file of Mimic-iii distribution.')
 	parser.add_argument('diagnoses_file', type=str, default='', help='The DIAGNOSES_ICD.csv file of mimic-iii distribution.')
-	parser.add_argument('output_prefix', type=str, default='preprocessing', help='The output file radical name.')
 	parser.add_argument('--procedures_file', type=str, default='', help='The optional PROCEDURES_ICD.csv file of mimic-iii distribution - for processing using procedures codes.')
-	parser.add_argument('--map_ICD9_to_CCS', type=int, default=0, choices=[0,1], help='True/False [0/1] to ap ICD9 codes to CCS codes (better accuracy, less granularity); refer to https://www.hcup-us.ahrq.gov/toolssoftware/CCS/CCS.jsp.')
+	parser.add_argument('output_prefix', type=str, default='preprocessing', help='The output file radical name.')
+	parser.add_argument('--map_ICD9_to_CCS', type=int, default=0, choices=[0,1], help='False/True [0/1] to convert ICD9 codes to CCS codes (better accuracy, less granularity); refer to https://www.hcup-us.ahrq.gov/toolssoftware/CCS/CCS.jsp.')
 	parser.add_argument('--data_partition', type=str, default='[90,10]', help='Provide an array with two values that sum up 100.')
 	argsTemp = parser.parse_args()
 	return argsTemp
@@ -121,6 +121,7 @@ if __name__ == '__main__':
 	initial_number_of_admissions = 0
 	previous_subject = 0
 	previous_admission = 0
+
 	for line in mimic_ADMISSIONS_csv:
 		initial_number_of_admissions += 1
 		tokens = line.strip().split(',')
@@ -132,7 +133,7 @@ if __name__ == '__main__':
 
 		# hadmTOadmttime_Map(hadm_id) -> duration of admission in hours
 		temp = dischargetime - admittime
-		hadmTOduration_Map[hadm_id] = temp.days * 24 + temp.seconds / 3600  # duration in hours
+		hadmTOduration_Map[hadm_id] = temp.days + temp.seconds / 3600 / 24 # duration in days
 
 		#the time-related stuff that follows, assumes that the ADMISSIONS.csv file
 		#was exported from postgres with command
@@ -146,7 +147,7 @@ if __name__ == '__main__':
 		if subject_id == previous_subject:
 			# keep track of the time since the last admission in days
 			temp = admittime - hadmTOadmttime_Map[previous_admission]
-			hadmTOinterval_Map[hadm_id] = temp.days + temp.seconds / 3600 / 24  # time since the last admission in days
+			hadmTOinterval_Map[hadm_id] = (temp.days + temp.seconds / 3600 / 24) / 30  # time since the last admission in days
 		else:
 			hadmTOinterval_Map[hadm_id] = 0  # 1st interval since the last admission is 0
 
@@ -159,6 +160,8 @@ if __name__ == '__main__':
 		#subjectTOhadms_Map(subject_id) -> set of hadms for subject_id
 		if subject_id in subjectTOhadms_Map: subjectTOhadms_Map[subject_id].append(hadm_id)
 		else: subjectTOhadms_Map[subject_id] = [hadm_id] #the brackets indicate that it will be a list
+
+
 	mimic_ADMISSIONS_csv.close()
 	print '-Initial number of admissions: ' + str(initial_number_of_admissions)
 	print '-Initial number of subjects: ' + str(len(subjectTOhadms_Map))
@@ -239,12 +242,12 @@ if __name__ == '__main__':
 
 	print 'Converting maps to lists in preparation for dump'
 	all_subjectsListOfCODEsList_LIST = []
-	#for each subject_id, get its key-value (subject_id, (admittime, CODESs_List))
+	#for each subject_id, get its key-value (subject_id, (admittime, ICD9_List, hadm_id)) - the value is a tripple
 	for subject_id, time_ordered_CODESs_List in subjectTOorderedHADM_IDS_Map.iteritems():
 		subject_list_of_CODEs_List = []
 		#for each admission (admittime, CODESs_List) build lists of time and CODEs list
 		for admission in time_ordered_CODESs_List:   		#each element in time_ordered_CODESs_List is a tripple (admittime, ICD9_List, hadm_id)
-			#here, admission = [admittime, ICD9_List, hadm_id)
+			#here, admission = (admittime, ICD9_List, hadm_id)
 			subject_list_of_CODEs_List.append((admission[1],admission[2]))  #build list of lists of the admissions' CODEs of the current subject_id, stores hadm_id together
 		#lists of lists, one entry per subject_id
 		all_subjectsListOfCODEsList_LIST.append(subject_list_of_CODEs_List)	#build list of list of lists of the admissions' ICD9s - one entry per subject_id
@@ -257,8 +260,13 @@ if __name__ == '__main__':
 	#print distribution of CCS codes
 	if ARGS.map_ICD9_to_CCS:
 		CCS_to_descriptionMap = pickle.load(open(sys.path[0] + '/ccs_to_description_dictionary', 'rb'))
+		i = 0
+		internalCodeToTextualDescriptionMAP = {}
 		for CODE, value in CODES_distributionMAP:
-			print str(CODE) +': ' + str(value) + ' - ' + CCS_to_descriptionMap[CODE]
+			print 'Internal code: ' + str(i) + '; CCS code: ' + str(CODE) +'; Frequency: ' + str(value) + '; Textual: ' + CCS_to_descriptionMap[CODE]
+			internalCodeToTextualDescriptionMAP[i] = CCS_to_descriptionMap[CODE]
+			i += 1
+		pickle.dump(internalCodeToTextualDescriptionMAP, open(ARGS.output_prefix[0:ARGS.output_prefix.rfind('/')]+'/internalCodeToTextualDescriptionMAP.pickle', 'wb'), -1)
 
 	#Randomize the order of the patients at the first dimension
 	random.shuffle(all_subjectsListOfCODEsList_LIST)
@@ -295,7 +303,10 @@ if __name__ == '__main__':
 			type_of_admissionsList.append(hadmTOadmtype_Map[hadm_id])
 
 			for CODE in CODEs_List[0]:
-				new_CODEs_List.append(CCS_ordered_internalCodesMap[CODE])   #newVisit is the CODEs_List, but with the new sequential ids
+				newCode = CCS_ordered_internalCodesMap[CODE]
+				if newCode not in new_CODEs_List: #avoid duplicated (repeated) diagnoses for the same admission (happens in some cases)
+					new_CODEs_List.append(newCode)   #newVisit is the CODEs_List, but with the new sequential ids
+				#although the code avoid repeatition of ICD-9 codes, they might become repeated after the CCS mapping
 			new_subject_list_of_CODEs_List.append(new_CODEs_List)		#new_subject_list_of_CODEs_List is the subject_list_of_CODEs_List, but with the id given by its frequency
 
 			if len(ARGS.procedures_file) > 0:
@@ -317,6 +328,53 @@ if __name__ == '__main__':
 	print ''
 	nCodes = len(CCS_ordered_internalCodesMap)
 	print '-Number of actually used DIAGNOSES codes: '+ str(nCodes)
+
+	#we create sequences with all possible sizes, for example, a sequence [[a],[b],[c],[d]] gives raise to [[a],[b],[c]] and [[a],[b]], besides the original
+	#this one is mandatory
+	temp_subjectsListOfCODEsList_LIST = []
+	for patient_admissions in new_all_subjectsListOfCODEsList_LIST:
+		while len(patient_admissions) > 2:
+			trimmed_patient_admissions = patient_admissions[:-1]
+			temp_subjectsListOfCODEsList_LIST.append(trimmed_patient_admissions)
+			patient_admissions = trimmed_patient_admissions
+	new_all_subjectsListOfCODEsList_LIST = new_all_subjectsListOfCODEsList_LIST + temp_subjectsListOfCODEsList_LIST
+
+	#writing test data
+	random.shuffle(new_all_subjectsListOfCODEsList_LIST)
+	print 'Writing ' + str(partitions[1]) + '% of the patients read from file ' + ARGS.admissions_file
+	index_of_first_patient_to_dump = int(math.ceil(len(new_all_subjectsListOfCODEsList_LIST)*int(partitions[0])/100))
+	index_of_last_patient_to_dump = len(new_all_subjectsListOfCODEsList_LIST)
+	#index_of_last_patient_to_dump = index_of_first_patient_to_dump + int(math.ceil(len(new_all_subjectsListOfCODEsList_LIST)*int(partitions[1])/100))
+	pickle.dump(new_all_subjectsListOfCODEsList_LIST[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.test', 'wb'), -1)
+	pickle.dump(duration_of_admissionsListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.DURATION.test', 'wb'), -1)
+	pickle.dump(interval_since_last_admissionListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.INTERVAL.test', 'wb'), -1)
+	pickle.dump(type_of_admissionsListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.TYPE.test', 'wb'), -1)
+	print '   Patients from ' + str(index_of_first_patient_to_dump) + ' to ' + str(index_of_last_patient_to_dump)
+	print '   Success, file: ' + ARGS.output_prefix + '_' + str(nCodes) + '.test created'
+	total_patients_dumped = index_of_last_patient_to_dump - index_of_first_patient_to_dump
+	if len(ARGS.procedures_file) > 0:
+		pickle.dump(new_all_subjects_list_of_ProcCodes_List[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nProcCodes) + '.PROCEDURE.test', 'wb'), -1)
+
+	#remove test records from the data; the remaining will be used for training
+	new_all_subjectsListOfCODEsList_LIST = new_all_subjectsListOfCODEsList_LIST[:index_of_first_patient_to_dump]
+
+
+	#here we create sequences for all the pairs of 2 consecutive admissions
+	onlyTwoAdmissionsPatients = []
+	for patient_admissions in new_all_subjectsListOfCODEsList_LIST:
+		nAdms = len(patient_admissions)
+		ithAdm = 0
+		while(ithAdm < (nAdms-1)):
+			twoAdmis = []
+			twoAdmis.append(patient_admissions[ithAdm])
+			twoAdmis.append(patient_admissions[ithAdm+1])
+			ithAdm += 1
+			onlyTwoAdmissionsPatients.append(twoAdmis)
+	new_all_subjectsListOfCODEsList_LIST = new_all_subjectsListOfCODEsList_LIST + onlyTwoAdmissionsPatients
+
+	random.shuffle(new_all_subjectsListOfCODEsList_LIST)
+	random.shuffle(new_all_subjectsListOfCODEsList_LIST)
+
 	if len(ARGS.procedures_file) > 0:
 		nProcCodes = len(procCODEstoInternalID_map)
 		print '-Numer of actually used PROCEDURE codes: ' + str(nProcCodes)
@@ -324,49 +382,16 @@ if __name__ == '__main__':
 	print '-Final number of subjects: ' + str(len(new_all_subjectsListOfCODEsList_LIST))
 	print '-Final number of admissions: ' + str(final_number_of_admissions)
 	#Partitioning data
-	if (len(partitions) >= 1):
-		total_patients_dumped = 0;
-		print 'Writing ' + str(partitions[0]) + '% of the patients read from file ' + ARGS.admissions_file
-		index_of_last_patient_to_dump = int(math.ceil(len(new_all_subjectsListOfCODEsList_LIST)*int(partitions[0])/100))
-		pickle.dump(new_all_subjectsListOfCODEsList_LIST[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.train', 'wb'), -1)
-		pickle.dump(duration_of_admissionsListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.DURATION.train', 'wb'), -1)
-		pickle.dump(interval_since_last_admissionListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.INTERVAL.train', 'wb'), -1)
-		pickle.dump(type_of_admissionsListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.TYPE.train', 'wb'), -1)
-		print '   Patients from 0 to ' + str(index_of_last_patient_to_dump)
-		print '   Success, file: ' + ARGS.output_prefix + '_' + str(nCodes) + '.train created'
-		total_patients_dumped += index_of_last_patient_to_dump
-#		if len(ARGS.procedures_file) > 0:
-#			pickle.dump(new_all_subjects_list_of_ProcCodes_List[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nProcCodes) + '.PROCEDURE.train', 'wb'), -1)
+	total_patients_dumped = 0;
 
-		if (len(partitions) >= 2):
-			print 'Writing ' + str(partitions[1]) + '% of the patients read from file ' + ARGS.admissions_file
-			index_of_first_patient_to_dump = index_of_last_patient_to_dump
-			index_of_last_patient_to_dump = index_of_first_patient_to_dump + int(math.ceil(len(new_all_subjectsListOfCODEsList_LIST)*int(partitions[1])/100))
-			pickle.dump(new_all_subjectsListOfCODEsList_LIST[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.test', 'wb'), -1)
-			pickle.dump(duration_of_admissionsListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.DURATION.test', 'wb'), -1)
-			pickle.dump(interval_since_last_admissionListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.INTERVAL.test', 'wb'), -1)
-			pickle.dump(type_of_admissionsListOfLists[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.TYPE.test', 'wb'), -1)
-			print '   Patients from ' + str(index_of_first_patient_to_dump) + ' to ' + str(index_of_last_patient_to_dump)
-			print '   Success, file: ' + ARGS.output_prefix + '_' + str(nCodes) + '.test created'
-			total_patients_dumped += index_of_last_patient_to_dump - index_of_first_patient_to_dump
-#			if len(ARGS.procedures_file) > 0:
-#				pickle.dump(new_all_subjects_list_of_ProcCodes_List[index_of_first_patient_to_dump:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nProcCodes) + '.PROCEDURE.test', 'wb'), -1)
-
-			if (len(partitions) >= 3):
-				print 'Writing ' + str(partitions[2]) + '% of the patients read from file ' + ARGS.admissions_file
-				index_of_first_patient_to_dump = index_of_last_patient_to_dump
-				pickle.dump(new_all_subjectsListOfCODEsList_LIST[index_of_first_patient_to_dump:],open(ARGS.output_prefix + '_' + str(nCodes) + '.valid', 'wb'), -1)
-				pickle.dump(duration_of_admissionsListOfLists[index_of_first_patient_to_dump:], open(ARGS.output_prefix + '_' + str(nCodes) + '.DURATION.valid', 'wb'), -1)
-				pickle.dump(interval_since_last_admissionListOfLists[index_of_first_patient_to_dump:], open(ARGS.output_prefix + '_' + str(nCodes) + '.INTERVAL.valid', 'wb'), -1)
-				pickle.dump(type_of_admissionsListOfLists[index_of_first_patient_to_dump:], open(ARGS.output_prefix + '_' + str(nCodes) + '.TYPE.valid', 'wb'), -1)
-				print '   Patients from ' + str(index_of_first_patient_to_dump) + ' to the end of the file'
-				print '   Success, file: ' + ARGS.output_prefix + '_' + str(nCodes) + '.valid created'
-				total_patients_dumped += len(new_all_subjectsListOfCODEsList_LIST) - total_patients_dumped
-				print 'Total of dumped patients: ' + str(total_patients_dumped) + ' out of ' + str(len(new_all_subjectsListOfCODEsList_LIST))
-#				if len(ARGS.procedures_file) > 0:
-#					pickle.dump(new_all_subjects_list_of_ProcCodes_List[index_of_first_patient_to_dump:], open(ARGS.output_prefix + '_' + str(nProcCodes) + '.PROCEDURE.valid', 'wb'), -1)
-	else:
-		print 'Error, please provide data partition scheme. E.g, [80,10,10], for 80\% train, 10\% test, and 10\% validation.'
-
-
-
+	print 'Writing ' + str(partitions[0]) + '% of the patients read from file ' + ARGS.admissions_file
+	index_of_last_patient_to_dump = int(math.ceil(len(new_all_subjectsListOfCODEsList_LIST)*int(partitions[0])/100))
+	pickle.dump(new_all_subjectsListOfCODEsList_LIST[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.train', 'wb'), -1)
+	pickle.dump(duration_of_admissionsListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.DURATION.train', 'wb'), -1)
+	pickle.dump(interval_since_last_admissionListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.INTERVAL.train', 'wb'), -1)
+	pickle.dump(type_of_admissionsListOfLists[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nCodes) + '.TYPE.train', 'wb'), -1)
+	print '   Patients from 0 to ' + str(index_of_last_patient_to_dump)
+	print '   Success, file: ' + ARGS.output_prefix + '_' + str(nCodes) + '.train created'
+	total_patients_dumped += index_of_last_patient_to_dump
+	if len(ARGS.procedures_file) > 0:
+		pickle.dump(new_all_subjects_list_of_ProcCodes_List[0:index_of_last_patient_to_dump], open(ARGS.output_prefix + '_' + str(nProcCodes) + '.PROCEDURE.train', 'wb'), -1)
