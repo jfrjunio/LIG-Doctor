@@ -1,6 +1,7 @@
 #################################################################################################
 # author: junio@usp.br - Jose F Rodrigues-Jr
 # note: in many places, the code could be shorter, but that would just make it less comprehensible
+# comments are not revised, have them with caution
 #################################################################################################
 import random
 import math
@@ -36,7 +37,7 @@ def getNumberOfCodes(sets):
 						highestCode = code
 	return (highestCode + 1)
 
-def prepareHotVectors(train_tensor, labels_tensor):
+def prepareHotVectors(train_tensor):
 	nVisitsOfEachPatient_List = np.array([len(seq) for seq in train_tensor]) - 1
 	numberOfPatients = len(train_tensor)
 	maxNumberOfAdmissions = np.max(nVisitsOfEachPatient_List)
@@ -45,11 +46,11 @@ def prepareHotVectors(train_tensor, labels_tensor):
 	y_hotvectors_tensor = np.zeros((maxNumberOfAdmissions, numberOfPatients, ARGS.numberOfInputCodes)).astype(config.floatX)
 	mask = np.zeros((maxNumberOfAdmissions, numberOfPatients)).astype(config.floatX)
 
-	for idx, (train_patient_matrix,label_patient_matrix) in enumerate(zip(train_tensor,labels_tensor)):
+	for idx, train_patient_matrix in enumerate(train_tensor):
 		for i_th_visit, visit_line in enumerate(train_patient_matrix[:-1]): #ignores the last admission, which is not part of the training
 			for code in visit_line:
 				x_hotvectors_tensorf[i_th_visit, idx, code] = 1
-		for i_th_visit, visit_line in enumerate(label_patient_matrix[1:]):  #label_matrix[1:] = all but the first admission slice, not used to evaluate (this is the answer)
+		for i_th_visit, visit_line in enumerate(train_patient_matrix[1:]):  #label_matrix[1:] = all but the first admission slice, not used to evaluate (this is the answer)
 			for code in visit_line:
 				y_hotvectors_tensor[i_th_visit, idx, code] = 1
 		mask[:nVisitsOfEachPatient_List[idx], idx] = 1.
@@ -63,7 +64,7 @@ def prepareHotVectors(train_tensor, labels_tensor):
 def init_params_BiMinGRU(previousDimSize):
 	for count, hiddenDimSize in enumerate(ARGS.hiddenDimSize):  #by default: 0, 200; 1, 200 according to enumerate
 		#http://philipperemy.github.io/xavier-initialization/
-		xavier_variance = math.sqrt(2.0/float(previousDimSize+hiddenDimSize))
+		xavier_variance = math.sqrt(6.0/float(previousDimSize+hiddenDimSize))
 		tPARAMS['fWf_'+str(count)] = theano.shared(np.random.normal(0., xavier_variance, (previousDimSize, hiddenDimSize)).astype(config.floatX), name='fWf_'+str(count))
 		tPARAMS['fUf_' + str(count)] = theano.shared(np.identity(hiddenDimSize).astype(config.floatX), name='fUf_' + str(count))
 		tPARAMS['fbf_'+str(count)] = theano.shared(np.zeros(hiddenDimSize).astype(config.floatX), name='fbf_'+str(count))
@@ -84,6 +85,8 @@ def init_params_BiMinGRU(previousDimSize):
 	tPARAMS['fJ'] = theano.shared(np.identity(previousDimSize).astype(config.floatX), name='fJ')
 	tPARAMS['bJ'] = theano.shared(np.identity(previousDimSize).astype(config.floatX), name='bJ')
 	tPARAMS['fbb'] = theano.shared(np.zeros(previousDimSize).astype(config.floatX), name='fbb')
+	tPARAMS['fResAlpha'] = theano.shared(0.1, name='fResAlpha')
+	tPARAMS['bResAlpha'] = theano.shared(0.1, name='bResAlpha')
 	tPARAMS['jlrelu'] = theano.shared(0.1, name='jlrelu')
 
 	return previousDimSize
@@ -98,20 +101,21 @@ def fMinGRU_layer(inputTensor, layerIndex, hiddenDimSize, mask=None):
 	Wf = T.dot(inputTensor,tPARAMS['fWf_' + layerIndex])
 	Wh = T.dot(inputTensor,tPARAMS['fWh_' + layerIndex])
 
-	def stepFn(stepMask, wf, wh, h_previous):
+	def stepFn(stepMask, wf, wh, h_previous, h_previous_previous):
 		f = T.nnet.sigmoid(wf + T.dot(h_previous,tPARAMS['fUf_' + layerIndex]) + tPARAMS['fbf_' + layerIndex])
-		h_intermediate = T.tanh(wh + T.dot(f * h_previous, tPARAMS['fUh_' + layerIndex]) + tPARAMS['fbh_' + layerIndex])
+		h_intermediate = tPARAMS['fResAlpha']*h_previous_previous + T.tanh(wh + T.dot(f * h_previous, tPARAMS['fUh_' + layerIndex]) + tPARAMS['fbh_' + layerIndex])
 		h_new = ((1. - f) * h_previous) + f * h_intermediate
 		h_new = stepMask[:, None] * h_new + (1. - stepMask)[:,None] * h_previous
-		return h_new # becomes h_previous in the next iteration
+		return h_new, h_previous # becomes h_previous in the next iteration
 
+	#here, we unfold the RNN
 	results, _ = theano.scan(fn=stepFn,  # function to execute
-								   sequences=[mask, Wf, Wh],  # input to stepFn
-								   outputs_info=T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize), #initial h_previous
-								   name='fMinGRU_layer' + layerIndex,  # labeling for debug
-								   n_steps=maxNumberOfVisits)  # number of times to execute - scan is a loop
+							 sequences=[mask, Wf, Wh],  # input to stepFn
+							 outputs_info=[T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize),T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize)], #initial h_previous
+							 name='fMinGRU_layer' + layerIndex,  # labeling for debug
+							 n_steps=maxNumberOfVisits)  # number of times to execute (d0 times, once for each time step)
 
-	return results
+	return results[0]
 
 def bMinGRU_layer(inputTensor, layerIndex, hiddenDimSize, mask=None):
 	maxNumberOfVisits = inputTensor.shape[0]
@@ -121,20 +125,21 @@ def bMinGRU_layer(inputTensor, layerIndex, hiddenDimSize, mask=None):
 	Wh = T.dot(inputTensor,tPARAMS['bWh_' + layerIndex])
 	bStepMask = mask[::-1,::]
 
-	def stepFn(stepMask, wf, wh, h_previous):  # .* -> element-wise multiplication; * -> matrix multiplication
+	def stepFn(stepMask, wf, wh, h_previous, h_previous_previous):
 		f = T.nnet.sigmoid(wf + T.dot(h_previous,tPARAMS['bUf_' + layerIndex])) + tPARAMS['bbf_' + layerIndex]
-		h_intermediate = T.tanh(wh + T.dot(f * h_previous, tPARAMS['bUh_' + layerIndex]) + tPARAMS['bbh_' + layerIndex])
+		h_intermediate = tPARAMS['bResAlpha']*h_previous_previous + T.tanh(wh + T.dot(f * h_previous, tPARAMS['bUh_' + layerIndex]) + tPARAMS['bbh_' + layerIndex])
 		h_new = ((1. - f) * h_previous) + f * h_intermediate
 		h_new = stepMask[:, None] * h_new + (1. - stepMask)[:,None] * h_previous
-		return h_new
+		return h_new, h_previous # becomes h_previous in the next iteration
+
 	results, _ = theano.scan(fn=stepFn,  # function to execute
 								   sequences=[bStepMask, Wf, Wh],  # input to stepFn
-								   outputs_info=T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize),
+								   outputs_info=[T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize),T.alloc(numpy_floatX(0.0), batchSize, hiddenDimSize)], #initial h_previous
 								   # just initialization
 								   name='bMinGRU_layer' + layerIndex,  # just labeling for debug
 								   n_steps=maxNumberOfVisits)  # number of times to execute - scan is a loop
 
-	return results
+	return results[0]
 
 def init_params_output_layer(previousDimSize):
 	xavier_variance = math.sqrt(2.0 / float(previousDimSize + ARGS.numberOfInputCodes))
@@ -155,6 +160,7 @@ def build_model():
 	mask = T.matrix('mask', dtype=config.floatX)
 
 	nVisitsOfEachPatient_List = T.vector('nVisitsOfEachPatient_List', dtype=config.floatX)
+	nOfPatients = nVisitsOfEachPatient_List.shape[0]
 	maxNumberOfAdmissions = xf.shape[0]
 
 	flowing_tensorf = xf
@@ -180,12 +186,23 @@ def build_model():
 		n_steps=maxNumberOfAdmissions)
 
 	flowing_tensor = results * mask[:, :, None]
-
 	epislon = 1e-8
-	cross_entropy = -(y * T.log(flowing_tensor + epislon) + (1. - y) * T.log(1. - flowing_tensor + epislon))
+
+	#the answer (label) is at y[nVisits - 1], that is, the last visit
+	def computeCrossEntropy(nVisitsOfEachPatient_List, patientsIndexes, y, flowing_tensor):
+		nVisits = T.cast(nVisitsOfEachPatient_List,'int32')
+		ithPatient = T.cast(patientsIndexes,'int32')
+		cross_entropy = -(y[nVisits - 1][ithPatient] * T.log(flowing_tensor[nVisits - 1][ithPatient] + epislon) + (1. - y[nVisits - 1][ithPatient]) * T.log(1. - flowing_tensor[nVisits - 1][ithPatient] + epislon))
+		return cross_entropy
+
+	matrixCrossEntropy, _ = theano.scan(fn=computeCrossEntropy,
+								  	sequences=[nVisitsOfEachPatient_List,T.arange(nOfPatients)],
+									non_sequences=[y,flowing_tensor],
+									n_steps = nOfPatients)
+
 	# the complete crossentropy equation is -1/n* sum(cross_entropy); where n is the number of elements
 	# see http://neuralnetworksanddeeplearning.com/chap3.html#regularization
-	prediction_loss = cross_entropy.sum(axis=2).sum(axis=0) / nVisitsOfEachPatient_List
+	prediction_loss = matrixCrossEntropy.sum(axis=1)
 
 	L2_regularized_loss = T.mean(prediction_loss) + ARGS.LregularizationAlpha*(tPARAMS['W_output'] ** 2).sum()
 	MODEL = L2_regularized_loss
@@ -223,22 +240,13 @@ def load_data():
 	ARGS.numberOfInputCodes = getNumberOfCodes([main_trainSet,main_testSet])
 	print 'Number of diagnosis input codes: ' + str(ARGS.numberOfInputCodes)
 
-	#uses the same data for testing, but disregarding the fist admission of each patient
-	labels_trainSet = pickle.load(open(ARGS.inputFileRadical+'.train', 'rb'))
-	labels_testSet = pickle.load(open(ARGS.inputFileRadical+'.test', 'rb'))
-
 	train_sorted_index = sorted(range(len(main_trainSet)), key=lambda x: len(main_trainSet[x]))  #lambda x: len(seq[x]) --> f(x) return len(seq[x])
 	main_trainSet = [main_trainSet[i] for i in train_sorted_index]
-	labels_trainSet = [labels_trainSet[i] for i in train_sorted_index]
 
 	test_sorted_index = sorted(range(len(main_testSet)), key=lambda x: len(main_testSet[x]))
 	main_testSet = [main_testSet[i] for i in test_sorted_index]
-	labels_testSet = [labels_testSet[i] for i in test_sorted_index]
 
-	trainSet = [main_trainSet, labels_trainSet]
-	testSet = [main_testSet, labels_testSet]
-
-	return trainSet, testSet
+	return main_trainSet, main_testSet
 
 #the performance computation uses the test data and returns the cross entropy measure
 def performEvaluation(TEST_MODEL_COMPILED, test_Set):
@@ -249,9 +257,8 @@ def performEvaluation(TEST_MODEL_COMPILED, test_Set):
 	dataCount = 0.0
 	#computes de crossEntropy for all the elements in the test_Set, using the batch scheme of partitioning
 	for index in xrange(n_batches):
-		batchX = test_Set[0][index * batchSize:(index + 1) * batchSize]
-		batchY = test_Set[1][index * batchSize:(index + 1) * batchSize]
-		xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY)
+		batchX = test_Set[index * batchSize:(index + 1) * batchSize]
+		xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX)
 		crossEntropy = TEST_MODEL_COMPILED(xf, xb, y, mask, nVisitsOfEachPatient_List)
 
 		#accumulation by simple summation taking the batch size into account
@@ -271,13 +278,13 @@ def train_model():
 	init_params_output_layer(previousDimSize)
 
 	print '==> model building'
-	xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL =  build_model()
-	grads = T.grad(theano.gradient.grad_clip(MODEL, -0.5, 0.5), wrt=tPARAMS.values())
+	xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL = build_model()
+	grads = T.grad(theano.gradient.grad_clip(MODEL, -0.3, 0.3), wrt=tPARAMS.values())
 	TRAIN_MODEL_COMPILED, UPDATE_WEIGHTS_COMPILED = addAdadeltaGradientDescent(grads, xf, xb, y, mask, nVisitsOfEachPatient_List, MODEL)
 
 	print '==> training and validation'
 	batchSize = ARGS.batchSize
-	n_batches = int(np.ceil(float(len(trainSet[0])) / float(batchSize)))
+	n_batches = int(np.ceil(float(len(trainSet)) / float(batchSize)))
 	TEST_MODEL_COMPILED = theano.function(inputs=[xf, xb, y, mask, nVisitsOfEachPatient_List], outputs=MODEL, name='TEST_MODEL_COMPILED')
 
 	bestValidationCrossEntropy = 1e20
@@ -291,9 +298,8 @@ def train_model():
 		iteration = 0
 		trainCrossEntropyVector = []
 		for index in random.sample(range(n_batches), n_batches):
-			batchX = trainSet[0][index*batchSize:(index+1)*batchSize]
-			batchY = trainSet[1][index*batchSize:(index + 1)*batchSize]
-			xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX, batchY)
+			batchX = trainSet[index*batchSize:(index+1)*batchSize]
+			xf, xb, y, mask, nVisitsOfEachPatient_List = prepareHotVectors(batchX)
 			xf += np.random.normal(0, 0.1, xf.shape)  #add gaussian noise as a means to reduce overfitting
 			xb += np.random.normal(0, 0.1, xb.shape)  #add gaussian noise as a means to reduce overfitting
 
@@ -334,8 +340,8 @@ def parse_arguments():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('inputFileRadical', type=str, metavar='<visit_file>', help='File radical name (the software will look for .train and .test files) with pickled data organized as patient x admission x codes.')
 	parser.add_argument('outFile', metavar='out_file', default='model_output', help='Any file name to store the model.')
-	parser.add_argument('--maxConsecutiveNonImprovements', type=int, default=5, help='Training wiil run until reaching the maximum number of epochs without improvement before stopping the training')
-	parser.add_argument('--hiddenDimSize', type=str, default='[271]', help='Number of layers and their size - for example [100,200] refers to two layers with 100 and 200 nodes.')
+	parser.add_argument('--maxConsecutiveNonImprovements', type=int, default=10, help='Training wiil run until reaching the maximum number of epochs without improvement before stopping the training')
+	parser.add_argument('--hiddenDimSize', type=str, default='[272]', help='Number of layers and their size - for example [100,200] refers to two layers with 100 and 200 nodes.')
 	parser.add_argument('--batchSize', type=int, default=100, help='Batch size.')
 	parser.add_argument('--nEpochs', type=int, default=1000, help='Number of training iterations.')
 	parser.add_argument('--LregularizationAlpha', type=float, default=0.001, help='Alpha regularization for L2 normalization')
@@ -349,9 +355,12 @@ def parse_arguments():
 
 
 if __name__ == '__main__':
+	#os.environ["MKL_THREADING_LAYER"] = "GNU"
+
 	global tPARAMS
 	tPARAMS = OrderedDict()
 	global ARGS
 	ARGS = parse_arguments()
 
 	train_model()
+	
