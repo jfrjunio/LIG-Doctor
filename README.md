@@ -1,15 +1,4 @@
 # LIG-Doctor
-#setting up theano
-0) install gcc
-1) install miniconda for python 2.7 (doesn't work with python 3)
-2) install theano and pygpu (conda install theano pygpu)
-3) numpy downgrade to 1.12 (conda install numpy=1.12)
-4) fix a theano installation bug as described in
-https://stackoverflow.com/questions/53423610/how-to-update-scan-cython-code-in-theano
-(here is the file: https://github.com/Theano/Theano/blob/master/theano/scan_module/c_code/scan_perform.c)
-5) create text file ~/.theanorc with lines
-"[global]
-optimizer_excluding=scanOp_pushout_output"
 
 #testing the installation\
 	python
